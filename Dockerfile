@@ -36,7 +36,7 @@ COPY . .
 WORKDIR /app
 
 # Expose port
-EXPOSE 8002
+EXPOSE 18002
 
 # Command to run the application using module syntax or setting PYTHONPATH
 # We set PYTHONPATH to include /app

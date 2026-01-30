@@ -4,8 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: agent_service
-    ports:
-      - "8002:8002"
+    network_mode: "host"
     env_file:
       - .env
     volumes:
