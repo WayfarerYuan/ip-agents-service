@@ -127,13 +127,13 @@ async def chat_stream(request: ChatRequest):
                         if isinstance(content, str):
                             yield f"data: {json.dumps({'type': 'message', 'content': content})}\n\n"
                             
-                # 2. Tool Execution Debugging (Input)
+                # 3. Tool Execution Debugging (Input)
                 # Capture when a tool starts execution
                 elif kind == "on_tool_start":
                     # We only care about our defined tools
                     name = event["name"]
                     # Skip internal LangChain tools if any (usually none here)
-                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya"]:
+                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill"]:
                         inputs_data = event["data"].get("input")
                         yield f"data: {json.dumps({'type': 'tool_debug', 'status': 'start', 'tool': name, 'input': inputs_data})}\n\n"
                         
@@ -141,7 +141,7 @@ async def chat_stream(request: ChatRequest):
                 # Capture when a tool finishes
                 elif kind == "on_tool_end":
                     name = event["name"]
-                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya"]:
+                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill"]:
                         output_data = event["data"].get("output")
                         
                         # Send Debug Info
@@ -238,6 +238,79 @@ def save_prompt_settings(settings: PromptSettings):
             return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+class Skill(BaseModel):
+    skill_id: str
+    name: str
+    description: str = None
+    content: str = None
+    config_schema: str = "{}"
+
+@app.get("/skills")
+def get_all_skills():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT skill_id, name, description FROM skills ORDER BY created_at DESC")
+            skills = cursor.fetchall()
+            return skills
+    finally:
+        conn.close()
+
+@app.get("/skills/{skill_id}")
+def get_skill_details(skill_id: str):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM skills WHERE skill_id = %s", (skill_id,))
+            skill = cursor.fetchone()
+            if not skill:
+                raise HTTPException(status_code=404, detail="Skill not found")
+            return skill
+    finally:
+        conn.close()
+
+@app.post("/skills")
+def create_or_update_skill(skill: Skill):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Upsert
+            sql = """
+                INSERT INTO skills (skill_id, name, description, content, config_schema) 
+                VALUES (%s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                name = VALUES(name),
+                description = VALUES(description),
+                content = VALUES(content),
+                config_schema = VALUES(config_schema)
+            """
+            cursor.execute(sql, (skill.skill_id, skill.name, skill.description, skill.content, skill.config_schema))
+            conn.commit()
+            return {"status": "success", "skill_id": skill.skill_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.delete("/skills/{skill_id}")
+def delete_skill(skill_id: str):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Check dependencies in agent_skills
+            cursor.execute("SELECT count(*) as cnt FROM agent_skills WHERE skill_id = %s", (skill_id,))
+            res = cursor.fetchone()
+            if res['cnt'] > 0:
+                raise HTTPException(status_code=400, detail="Cannot delete skill: It is bound to agents.")
+                
+            cursor.execute("DELETE FROM skills WHERE skill_id = %s", (skill_id,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Skill not found")
+            conn.commit()
+            return {"status": "success"}
     finally:
         conn.close()
 

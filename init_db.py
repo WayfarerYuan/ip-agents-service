@@ -34,6 +34,7 @@ def init_db():
         skill_id VARCHAR(50) PRIMARY KEY,
         name VARCHAR(100) NOT NULL,
         description TEXT,
+        content TEXT,
         config_schema JSON,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -108,15 +109,20 @@ def init_db():
     
     # Seed Data: Skills
     skills = [
-        ('ximalaya_skill', '喜马拉雅音频能力', '查询主播专辑和声音', '{"anchor_id": "int"}'),
-        ('stock_analysis_skill', '股市行情分析', '查询大盘和个股分析', '{}'),
-        ('rag_skill', '知识库检索', '检索Zilliz向量库', '{"collection_name": "string"}')
+        ('ximalaya_skill', '喜马拉雅音频能力', '查询主播专辑和声音', None, '{"anchor_id": "int"}'),
+        ('stock_analysis_skill', '股市行情分析', '查询大盘和个股分析', None, '{}'),
+        ('rag_skill', '知识库检索', '检索Zilliz向量库', None, '{"collection_name": "string"}'),
+        ('deep_research', '深度调研', '执行深度联网调研并生成报告', """### 深度调研 SOP
+1. **需求分析**：首先明确用户的具体调研目标。
+2. **多源搜索**：使用 `web_search` 搜索至少 3 个不同来源的信息。
+3. **交叉验证**：对比不同来源的数据，确保准确性。
+4. **综合报告**：按照“背景-现状-趋势-结论”的结构生成报告。""", '{}')
     ]
     
-    for s_id, s_name, s_desc, s_conf in skills:
+    for s_id, s_name, s_desc, s_content, s_conf in skills:
         cursor.execute(
-            "INSERT IGNORE INTO skills (skill_id, name, description, config_schema) VALUES (%s, %s, %s, %s)",
-            (s_id, s_name, s_desc, s_conf)
+            "INSERT IGNORE INTO skills (skill_id, name, description, content, config_schema) VALUES (%s, %s, %s, %s, %s)",
+            (s_id, s_name, s_desc, s_content, s_conf)
         )
         
     # Seed Data: Agent (Huafei)

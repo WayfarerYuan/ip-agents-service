@@ -5,6 +5,7 @@ from agent_service.config import VOLC_API_KEY, VOLC_BASE_URL, MODEL_GENERATOR
 from agent_service.tools.web_search import web_search
 from agent_service.tools.rag import retrieve_knowledge
 from agent_service.tools.ximalaya import search_ximalaya
+from agent_service.tools.skills import load_skill
 
 chat_model = ChatOpenAI(
     api_key=VOLC_API_KEY,
@@ -22,7 +23,16 @@ async def chat_worker(state: AgentState):
     # Context is now provided via ToolMessages in the message history, 
     # so we don't need to manually inject rag_data or skill_results anymore.
     
-    final_system_prompt = system_prompt_template
+    # Progressive Disclosure Instruction
+    skill_instruction = """
+    \n\n[Skill Loading Capabilities]
+    You have access to a library of specialized skills and SOPs.
+    If the user asks for a complex task (e.g., "analyze stocks", "write a report", "debug code"), 
+    ALWAYS check if a relevant skill exists by using the `load_skill` tool first.
+    Do not guess or hallucinate steps; load the official skill/SOP to ensure compliance.
+    """
+    
+    final_system_prompt = system_prompt_template + skill_instruction
     
     # Ensure system prompt is the first message
     # We reconstruct the message list to update the system prompt if it changed
@@ -38,7 +48,7 @@ async def chat_worker(state: AgentState):
     
     # Bind ALL available tools
     # This enables "On-Demand" usage of RAG, Search, and other skills.
-    tools = [web_search, retrieve_knowledge, search_ximalaya]
+    tools = [web_search, retrieve_knowledge, search_ximalaya, load_skill]
     model_with_tools = chat_model.bind_tools(tools)
     
     # Debug: Print messages payload

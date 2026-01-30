@@ -27,6 +27,7 @@ venv/
 .venv/
 env/
 .env
+*.py[co]
 
 # LangGraph / LangChain
 .langgraph_api/

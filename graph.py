@@ -6,6 +6,7 @@ from agent_service.nodes.setup import setup_worker
 from agent_service.tools.web_search import web_search
 from agent_service.tools.rag import retrieve_knowledge
 from agent_service.tools.ximalaya import search_ximalaya
+from agent_service.tools.skills import load_skill
 
 def create_graph(checkpointer=None):
     workflow = StateGraph(AgentState)
@@ -15,7 +16,7 @@ def create_graph(checkpointer=None):
     workflow.add_node("chat", chat_worker)
     
     # ToolNode with all available tools
-    tools = [web_search, retrieve_knowledge, search_ximalaya]
+    tools = [web_search, retrieve_knowledge, search_ximalaya, load_skill]
     workflow.add_node("tools", ToolNode(tools))
 
     # Entry
