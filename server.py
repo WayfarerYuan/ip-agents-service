@@ -7,6 +7,22 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
+# When running in Docker, we might be running from /app, and agent_service code is in /app
+# We need to ensure that /app's parent is not needed, or structure imports differently.
+# If we run 'python server.py' inside /app, 'agent_service' module is NOT available unless /app is treated as a package
+# or we are outside.
+# However, usually the structure is:
+# project/
+#   agent_service/
+#      server.py
+#      ...
+#
+# If we copy '.' to '/app', then /app contains server.py directly.
+# So imports like 'from agent_service.graph import ...' will fail because 'agent_service' is not a subdirectory of /app,
+# but rather /app IS the content of agent_service.
+
+# Fix: If we are in the root of the service code, we should change imports or structure.
+# But better: Adjust Dockerfile to preserve the directory structure.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware

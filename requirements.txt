@@ -10,4 +10,4 @@ pymilvus
 python-dotenv
 aiohttp
 requests
-volcengine
+# volcengine
