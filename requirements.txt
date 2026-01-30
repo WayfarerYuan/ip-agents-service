@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+langgraph
+langchain
+langchain-core
+langchain-openai
+pymysql
+aiomysql
+pymilvus
+python-dotenv
+aiohttp
+requests
+volcengine

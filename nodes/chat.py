@@ -1,0 +1,75 @@
+from langchain_core.messages import SystemMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from agent_service.state import AgentState
+from agent_service.config import VOLC_API_KEY, VOLC_BASE_URL, MODEL_GENERATOR
+from agent_service.tools.web_search import web_search
+from agent_service.tools.rag import retrieve_knowledge
+from agent_service.tools.ximalaya import search_ximalaya
+
+chat_model = ChatOpenAI(
+    api_key=VOLC_API_KEY,
+    base_url=VOLC_BASE_URL,
+    model=MODEL_GENERATOR,
+    temperature=0.7,
+    streaming=True
+)
+
+async def chat_worker(state: AgentState):
+    agent_config = state.get("agent_config", {})
+    # Use 'prompt_main' from DB as System Prompt
+    system_prompt_template = agent_config.get("prompt_main", "You are a helpful assistant.")
+    
+    # Context is now provided via ToolMessages in the message history, 
+    # so we don't need to manually inject rag_data or skill_results anymore.
+    
+    final_system_prompt = system_prompt_template
+    
+    # Ensure system prompt is the first message
+    # We reconstruct the message list to update the system prompt if it changed
+    # But we must preserve the conversation history.
+    # Typically, state["messages"] contains the full history including the initial system prompt?
+    # LangGraph adds messages. If we want to *replace* the system prompt, we might need to filter.
+    # However, usually we just prepend the current system prompt to the *rest* of the history
+    # and let the model handle it. 
+    # Or, if state["messages"] accumulates, we might have multiple system prompts.
+    # For now, let's assume we prepend a fresh system message.
+    
+    messages = [SystemMessage(content=final_system_prompt)] + state["messages"]
+    
+    # Bind ALL available tools
+    # This enables "On-Demand" usage of RAG, Search, and other skills.
+    tools = [web_search, retrieve_knowledge, search_ximalaya]
+    model_with_tools = chat_model.bind_tools(tools)
+    
+    # Debug: Print messages payload
+    print(f"\n[DEBUG] Turn with {len(messages)} messages:")
+    for i, m in enumerate(messages):
+        content_preview = str(m.content)[:100] if m.content else "None"
+        print(f"  [{i}] {m.type}: {content_preview}")
+        if hasattr(m, "tool_calls") and m.tool_calls:
+            print(f"      tool_calls: {m.tool_calls}")
+    
+    response = await model_with_tools.ainvoke(messages)
+    
+    # 1. Handle Tool Calls
+    if response.tool_calls:
+        print(f"[DEBUG] Model triggered tool calls: {response.tool_calls}")
+        return {"messages": [response]}
+    
+    # 2. Handle Text Response (Cleanup Doubao list content if present)
+    final_content = response.content
+    if isinstance(response.content, list):
+        print("[DEBUG] Detected list content, cleaning up...")
+        text_parts = []
+        for block in response.content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif isinstance(block, dict) and "text" in block:
+                text_parts.append(block["text"])
+        final_content = "".join(text_parts)
+    
+    # Create a FRESH AIMessage to ensure clean history for next turn
+    clean_response = AIMessage(content=final_content)
+    print(f"[DEBUG] Returning clean AIMessage. Content len: {len(final_content)}")
+        
+    return {"messages": [clean_response]}
