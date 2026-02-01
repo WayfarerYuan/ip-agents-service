@@ -1,5 +1,6 @@
 from langchain_core.messages import SystemMessage, AIMessage
 from langchain_openai import ChatOpenAI
+from agent_service.llm.chat_volcengine import ChatVolcengine
 from agent_service.state import AgentState
 from agent_service.config import VOLC_API_KEY, VOLC_BASE_URL, MODEL_GENERATOR
 from agent_service.tools.web_search import web_search
@@ -7,7 +8,7 @@ from agent_service.tools.rag import retrieve_knowledge
 from agent_service.tools.ximalaya import search_ximalaya
 from agent_service.tools.skills import load_skill
 
-chat_model = ChatOpenAI(
+chat_model_default = ChatVolcengine(
     api_key=VOLC_API_KEY,
     base_url=VOLC_BASE_URL,
     model=MODEL_GENERATOR,
@@ -19,6 +20,28 @@ async def chat_worker(state: AgentState):
     agent_config = state.get("agent_config", {})
     # Use 'prompt_main' from DB as System Prompt
     system_prompt_template = agent_config.get("prompt_main", "You are a helpful assistant.")
+    
+    # Dynamic Model Configuration
+    model_name = agent_config.get("model_override", MODEL_GENERATOR)
+    extra_body = agent_config.get("extra_body", None)
+    
+    if model_name != MODEL_GENERATOR or extra_body:
+        print(f"[DEBUG] Using dynamic model: {model_name} with extra_body: {extra_body}")
+        chat_model = ChatVolcengine(
+            api_key=VOLC_API_KEY,
+            base_url=VOLC_BASE_URL,
+            model=model_name,
+            temperature=0.7,
+            streaming=True,
+            model_kwargs={"extra_body": extra_body} if extra_body else {}
+        )
+    else:
+        chat_model = chat_model_default
+    
+    # 1. Inject Core Memory (if exists)
+    core_memory_text = agent_config.get("core_memory_context", "")
+    if core_memory_text:
+        system_prompt_template = f"【关于用户的核心记忆】\n{core_memory_text}\n\n" + system_prompt_template
     
     # Context is now provided via ToolMessages in the message history, 
     # so we don't need to manually inject rag_data or skill_results anymore.

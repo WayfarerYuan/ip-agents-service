@@ -38,8 +38,8 @@ WORKDIR /app
 # Expose port
 EXPOSE 18002
 
-# Command to run the application using module syntax or setting PYTHONPATH
-# We set PYTHONPATH to include /app
+# Set PYTHONPATH to include /app
 ENV PYTHONPATH=/app
 
-CMD ["python", "agent_service/server.py"]
+# Command to run the application using uvicorn with workers
+CMD ["uvicorn", "agent_service.server:app", "--host", "0.0.0.0", "--port", "18002", "--workers", "2"]
