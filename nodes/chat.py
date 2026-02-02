@@ -27,6 +27,8 @@ async def chat_worker(state: AgentState):
     
     if model_name != MODEL_GENERATOR or extra_body:
         print(f"[DEBUG] Using dynamic model: {model_name} with extra_body: {extra_body}")
+        if not VOLC_API_KEY:
+            raise ValueError("VOLC_API_KEY is not set. Please set it in the environment variables.")
         chat_model = ChatVolcengine(
             api_key=VOLC_API_KEY,
             base_url=VOLC_BASE_URL,

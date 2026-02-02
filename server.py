@@ -78,6 +78,9 @@ async def update_core_memory(user_id: str, agent_id: str, messages: list):
         # 2. Extract conversation snippet
         
         # 3. Call LLM to update memory
+        if not VOLC_API_KEY:
+            raise ValueError("VOLC_API_KEY is not set")
+        
         llm = ChatOpenAI(
             api_key=VOLC_API_KEY,
             base_url=VOLC_BASE_URL,
