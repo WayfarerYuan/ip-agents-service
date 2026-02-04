@@ -325,68 +325,85 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     chunk = event["data"]["chunk"]
                     
                     # 1.1 Capture Thinking/Reasoning Content (Volcengine/DeepSeek style)
-                    # Usually in additional_kwargs['reasoning_content']
                     reasoning = chunk.additional_kwargs.get("reasoning_content", "")
                     if reasoning:
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning})}\n\n"
+                        # Xiaoya doesn't have explicit thinking type, we use writtenAnswer with a prefix or just stream it.
+                        # For now, let's stream it as writtenAnswer but maybe distinct?
+                        # Or stick to legacy 'thinking' event if we want to keep frontend compat for a bit, 
+                        # but we are moving to Xiaoya.
+                        # Let's map it to writtenAnswer for now to be safe with the protocol.
+                        payload = {
+                            "type": "writtenAnswer",
+                            "data": {
+                                "delta": f"[Thinking] {reasoning}\n",
+                                "end": False,
+                                "final": False,
+                                "extra": {"is_thinking": True}
+                            }
+                        }
+                        yield f"event: writtenAnswer\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
                     # 1.2 Capture Normal Content
                     if chunk.content:
-                        # Clean up content if it's not string (rare in streaming but safe)
                         content = chunk.content
                         if isinstance(content, str):
-                            ai_response_content += content # Accumulate full response
-                            yield f"data: {json.dumps({'type': 'message', 'content': content})}\n\n"
+                            ai_response_content += content 
+                            payload = {
+                                "type": "writtenAnswer",
+                                "data": {
+                                    "delta": content,
+                                    "end": False,
+                                    "final": False
+                                }
+                            }
+                            yield f"event: writtenAnswer\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                             
                 # 3. Tool Execution Debugging (Input)
-                # Capture when a tool starts execution
                 elif kind == "on_tool_start":
-                    # We only care about our defined tools
                     name = event["name"]
-                    # Skip internal LangChain tools if any (usually none here)
-                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill"]:
+                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill", "display_card"]:
                         inputs_data = event["data"].get("input")
-                        yield f"data: {json.dumps({'type': 'tool_debug', 'status': 'start', 'tool': name, 'input': inputs_data})}\n\n"
+                        # Keep debug event for frontend debug panel (custom event)
+                        yield f"event: debug\ndata: {json.dumps({'type': 'tool_debug', 'status': 'start', 'tool': name, 'input': inputs_data})}\n\n"
                         
                 # 3. Tool Execution Debugging (Output) & Result Display
-                # Capture when a tool finishes
                 elif kind == "on_tool_end":
                     name = event["name"]
-                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill"]:
+                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill", "display_card"]:
                         output_data = event["data"].get("output")
                         
-                        # Send Debug Info
-                        # Output might be long, but for debug panel we send it.
-                        # Note: output_data is usually a string (Tool output)
-                        if hasattr(output_data, "content"): # If it's a Message
+                        if hasattr(output_data, "content"):
                             output_str = output_data.content
                         else:
                             output_str = str(output_data)
                             
-                        yield f"data: {json.dumps({'type': 'tool_debug', 'status': 'end', 'tool': name, 'output': output_str})}\n\n"
+                        # Debug event
+                        yield f"event: debug\ndata: {json.dumps({'type': 'tool_debug', 'status': 'end', 'tool': name, 'output': output_str})}\n\n"
                         
-                        # Send Legacy 'tool' event for compatibility (if frontend relies on it)
-                        # The frontend likely uses 'rag_data' etc. from previous logic.
-                        # We map tool names to data keys.
-                        tool_key_map = {
-                            "retrieve_knowledge": "rag_data",
-                            "web_search": "web_search",
-                            "search_ximalaya": "ximalaya_result"
-                        }
-                        
-                        data_key = tool_key_map.get(name, name)
-                        
-                        # For RAG, frontend might expect nested content
-                        if name == "retrieve_knowledge":
-                             yield f"data: {json.dumps({'type': 'tool', 'data': {data_key: {'content': output_str}}})}\n\n"
-                        else:
-                             yield f"data: {json.dumps({'type': 'tool', 'data': {data_key: output_str}})}\n\n"
+                        # Special handling for display_card -> Xiaoya 'iting' protocol
+                        if name == "display_card":
+                            try:
+                                card_inner = json.loads(output_str)
+                                payload = {
+                                    "type": "iting",
+                                    "data": {
+                                        "type": 40,
+                                        "value": card_inner
+                                    }
+                                }
+                                yield f"event: iting\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                            except Exception as e:
+                                print(f"Error parsing display_card output: {e}")
+
+                        # Legacy mapping for other tools if needed
+                        # ...
 
         except Exception as e:
             print(f"Stream Error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"event: error\ndata: {json.dumps({'msg': str(e)})}\n\n"
             
-        yield "data: [DONE]\n\n"
+        # End event (Xiaoya protocol)
+        yield f"event: end\ndata: {json.dumps({'type': 'end', 'data': {'success': True, 'msg': ''}}, ensure_ascii=False)}\n\n"
         
         # After stream ends, trigger background task
         if ai_response_content:

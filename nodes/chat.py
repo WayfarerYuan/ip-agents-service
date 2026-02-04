@@ -7,6 +7,7 @@ from agent_service.tools.web_search import web_search
 from agent_service.tools.rag import retrieve_knowledge
 from agent_service.tools.ximalaya import search_ximalaya
 from agent_service.tools.skills import load_skill
+from agent_service.tools.cards import display_card
 
 chat_model_default = ChatVolcengine(
     api_key=VOLC_API_KEY,
@@ -55,6 +56,16 @@ async def chat_worker(state: AgentState):
     If the user asks for a complex task (e.g., "analyze stocks", "write a report", "debug code"), 
     ALWAYS check if a relevant skill exists by using the `load_skill` tool first.
     Do not guess or hallucinate steps; load the official skill/SOP to ensure compliance.
+
+    [Card Display Capabilities]
+    You have access to a `display_card` tool to show structured UI elements.
+    Use this tool when you need to display:
+    - Questions with options (type='question')
+    - Assessment feedback and next steps (type='assessment')
+    - Final results or reports (type='result')
+    - Subscription prompts (type='subscription')
+    - Briefings (type='briefing')
+    ALWAYS prefer using `display_card` over plain text for interactive flows.
     """
     
     final_system_prompt = system_prompt_template + skill_instruction
@@ -73,7 +84,7 @@ async def chat_worker(state: AgentState):
     
     # Bind ALL available tools
     # This enables "On-Demand" usage of RAG, Search, and other skills.
-    tools = [web_search, retrieve_knowledge, search_ximalaya, load_skill]
+    tools = [web_search, retrieve_knowledge, search_ximalaya, load_skill, display_card]
     model_with_tools = chat_model.bind_tools(tools)
     
     # Debug: Print messages payload
