@@ -19,8 +19,7 @@ chat_model_default = ChatVolcengine(
 
 async def chat_worker(state: AgentState):
     agent_config = state.get("agent_config", {})
-    # Use 'prompt_main' from DB as System Prompt
-    system_prompt_template = agent_config.get("prompt_main", "You are a helpful assistant.")
+    system_prompt_template = agent_config.get("prompt_main") or "You are a helpful assistant."
     
     # Dynamic Model Configuration
     model_name = agent_config.get("model_override", MODEL_GENERATOR)

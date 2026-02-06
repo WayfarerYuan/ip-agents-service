@@ -24,7 +24,7 @@ if parent_dir not in sys.path:
 # Fix: If we are in the root of the service code, we should change imports or structure.
 # But better: Adjust Dockerfile to preserve the directory structure.
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -417,6 +417,18 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+@app.get("/agents")
+def get_all_agents():
+    """Get list of all available agents"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT agent_id, name, description, avatar_url FROM agents ORDER BY created_at DESC")
+            agents = cursor.fetchall()
+            return agents
+    finally:
+        conn.close()
+
 @app.get("/agents/{agent_id}")
 def get_agent_info(agent_id: str):
     conf = load_agent_config(agent_id)
@@ -528,22 +540,25 @@ class Skill(BaseModel):
     config_schema: str = "{}"
 
 @app.get("/skills")
-def get_all_skills():
+def get_skills(agent_id: str = Query(..., description="Agent ID")):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT skill_id, name, description FROM skills ORDER BY created_at DESC")
+            cursor.execute(
+                "SELECT skill_id, name, description FROM skills WHERE agent_id = %s ORDER BY created_at DESC", 
+                (agent_id,)
+            )
             skills = cursor.fetchall()
             return skills
     finally:
         conn.close()
 
 @app.get("/skills/{skill_id}")
-def get_skill_details(skill_id: str):
+def get_skill_details(skill_id: str, agent_id: str = Query(..., description="Agent ID")):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM skills WHERE skill_id = %s", (skill_id,))
+            cursor.execute("SELECT * FROM skills WHERE skill_id = %s AND agent_id = %s", (skill_id, agent_id))
             skill = cursor.fetchone()
             if not skill:
                 raise HTTPException(status_code=404, detail="Skill not found")
@@ -552,21 +567,21 @@ def get_skill_details(skill_id: str):
         conn.close()
 
 @app.post("/skills")
-def create_or_update_skill(skill: Skill):
+def create_or_update_skill(skill: Skill, agent_id: str = Query(..., description="Agent ID")):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # Upsert
+            # Upsert (新结构：skills 表包含 agent_id)
             sql = """
-                INSERT INTO skills (skill_id, name, description, content, config_schema) 
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO skills (skill_id, agent_id, name, description, content, config, enabled) 
+                VALUES (%s, %s, %s, %s, %s, %s, TRUE)
                 ON DUPLICATE KEY UPDATE
                 name = VALUES(name),
                 description = VALUES(description),
                 content = VALUES(content),
-                config_schema = VALUES(config_schema)
+                config = VALUES(config)
             """
-            cursor.execute(sql, (skill.skill_id, skill.name, skill.description, skill.content, skill.config_schema))
+            cursor.execute(sql, (skill.skill_id, agent_id, skill.name, skill.description, skill.content, skill.config_schema))
             conn.commit()
             return {"status": "success", "skill_id": skill.skill_id}
     except Exception as e:
@@ -575,19 +590,17 @@ def create_or_update_skill(skill: Skill):
         conn.close()
 
 @app.delete("/skills/{skill_id}")
-def delete_skill(skill_id: str):
+def delete_skill(skill_id: str, agent_id: str = Query(..., description="Agent ID")):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # Check dependencies in agent_skills
-            cursor.execute("SELECT count(*) as cnt FROM agent_skills WHERE skill_id = %s", (skill_id,))
-            res = cursor.fetchone()
-            if res['cnt'] > 0:
-                raise HTTPException(status_code=400, detail="Cannot delete skill: It is bound to agents.")
+            # Check if skill exists and belongs to this agent
+            cursor.execute("SELECT skill_id FROM skills WHERE skill_id = %s AND agent_id = %s", (skill_id, agent_id))
+            skill = cursor.fetchone()
+            if not skill:
+                raise HTTPException(status_code=404, detail="Skill not found or not authorized")
                 
-            cursor.execute("DELETE FROM skills WHERE skill_id = %s", (skill_id,))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Skill not found")
+            cursor.execute("DELETE FROM skills WHERE skill_id = %s AND agent_id = %s", (skill_id, agent_id))
             conn.commit()
             return {"status": "success"}
     finally:

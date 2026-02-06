@@ -28,12 +28,11 @@ def load_agent_config(agent_id: str):
             if not agent:
                 return None
             
-            # Load Skills
+            # Load Skills (新结构：skills 表包含 agent_id)
             cursor.execute("""
-                SELECT s.skill_id, s.name, as_link.config 
-                FROM skills s
-                JOIN agent_skills as_link ON s.skill_id = as_link.skill_id
-                WHERE as_link.agent_id = %s AND as_link.enabled = TRUE
+                SELECT skill_id, name, config 
+                FROM skills
+                WHERE agent_id = %s AND enabled = TRUE
             """, (agent_id,))
             skills_data = cursor.fetchall()
             
