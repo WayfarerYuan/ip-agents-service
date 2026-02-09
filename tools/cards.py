@@ -4,29 +4,53 @@ import json
 @tool
 def display_card(card_type: str, data: dict) -> str:
     """
-    Display a UI card to the user. Use this tool when you want to show structured information like a question, an assessment result, or a subscription prompt.
-    
+    Display a UI card to the user. Use this tool to present structured interactions.
+
+    Supported card_type and data schema:
+
+    1. 'interactive_options': For quizzes, questions, or branch selections.
+       Data Schema:
+       {
+           "title": "Question text",
+           "options": [
+               {"label": "A", "text": "Option A text", "value": "value_a"},
+               {"label": "B", "text": "Option B text", "value": "value_b"}
+           ],
+           "multiple": false
+       }
+
+    2. 'profile_card': For displaying character stats, role info, or user attributes.
+       Data Schema:
+       {
+           "title": "Name/Role",
+           "subtitle": "Description",
+           "avatar": "http://...", 
+           "tags": ["Tag1", "Tag2"],
+           "attributes": [{"key": "Strength", "value": "100"}]
+       }
+
+    3. 'info_card': For knowledge display, analysis results, or general info.
+       Data Schema:
+       {
+           "title": "Title",
+           "content": "Markdown supported content",
+           "image_url": "http://... (optional)",
+           "link": {"text": "More", "url": "http://..."} (optional)
+       }
+
     Args:
-        card_type: The type of card to display. Supported values: 
-                   - 'question': For displaying a question with options.
-                   - 'assessment': For displaying assessment feedback and next question preview.
-                   - 'result': For displaying the final result of an assessment.
-                   - 'subscription': For displaying a subscription prompt.
-                   - 'briefing': For displaying a news briefing.
-        data: The data required for the card.
-    
+        card_type: The type of card (interactive_options, profile_card, info_card).
+        data: The content dictionary matching the schema.
+
     Returns:
-        A JSON string representing the card data, formatted for the frontend.
+        JSON string to be sent to client.
     """
-    # Construct the internal structure that the frontend expects inside the 'iting' event
+    # Construct standard internal structure
+    # This structure will be wrapped in 'iting' protocol by server.py
+    # Structure: { "cardType": "...", "cardData": { ... } }
     card_value = {
         "cardType": card_type,
         "cardData": data
     }
-    
-    # We return this structure. The server.py will wrap this in the full 'iting' protocol envelope.
-    # Or we can return the full envelope here. 
-    # Let's return the inner value for flexibility, and let server.py handle the protocol wrapper if possible.
-    # But to make it distinct from other text, maybe we return a specific dict structure.
     
     return json.dumps(card_value, ensure_ascii=False)

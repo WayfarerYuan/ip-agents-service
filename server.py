@@ -183,41 +183,41 @@ app.add_middleware(
 )
 
 class ChatRequest(BaseModel):
-    agent_id: str
-    message: str
-    session_id: str
-    user_id: str = "anonymous"
-    # New Model Parameters
-    model: Optional[str] = None
-    enable_thinking: Optional[bool] = None
-    reasoning_effort: Optional[str] = None # low, medium, high
-
-# Available Models for Frontend
-AVAILABLE_MODELS = [
-    {"id": "doubao-seed-1-8-251228", "name": "Doubao Seed 1.8 (Default)", "has_thinking": True},
-    {"id": "glm-4-7-251222", "name": "GLM-4.7", "has_thinking": True, "thinking_mode": "toggle"},
-    {"id": "doubao-seed-1-6-251015", "name": "Doubao Seed 1.6", "has_thinking": True},
-    {"id": "doubao-1-5-pro-32k-250115", "name": "Doubao 1.5 Pro", "has_thinking": False},
-]
-
-@app.get("/models")
-def get_available_models():
-    return AVAILABLE_MODELS
+    # Standard Xiaoya Protocol Fields
+    uid: str = Field(description="用户ID", default="anonymous")
+    query: str = Field(description="用户提问")
+    agentScene: str = Field(description="场景ID (Agent ID)")
+    deviceId: str = Field(description="设备ID", default="unknown_device")
+    
+    # Optional Fields
+    requestId: str = Field(default=None)
+    conversationId: str = Field(default=None)
+    clientInfo: dict = Field(default_factory=dict)
+    contextInfo: dict = Field(default_factory=dict)
+    customInputs: dict = Field(default_factory=dict)
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
-    agent_conf = load_agent_config(request.agent_id)
+    # 1. Adapt Input Parameters
+    user_id = request.uid
+    message = request.query
+    agent_id = request.agentScene
+    
+    # Session/Thread ID
+    session_id = request.conversationId or request.requestId or f"sess_{user_id}_{int(datetime.now().timestamp())}"
+
+    agent_conf = load_agent_config(agent_id)
     if not agent_conf:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
         
-    # 1. Fetch Core Memory (Runtime Context)
+    # 2. Fetch Core Memory (Runtime Context)
     core_memory = ""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 "SELECT core_memory FROM user_memories WHERE user_id = %s AND agent_id = %s",
-                (request.user_id, request.agent_id)
+                (user_id, agent_id)
             )
             res = cursor.fetchone()
             if res:
@@ -225,66 +225,50 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
     finally:
         conn.close()
     
-    # Configure Model and Extra Body for Volcengine
-    model_name = request.model if request.model else MODEL_GENERATOR
+    # Configure Model and Extra Body from customInputs
+    # customInputs structure: { "model_config": { "model": "...", "enable_thinking": true, "reasoning_effort": "medium" } }
+    # Or flat: { "model": "...", ... }
+    # Let's support flat for simplicity in first pass, or check specifically
+    
+    custom_inputs = request.customInputs or {}
+    model_name = custom_inputs.get("model") or MODEL_GENERATOR
+    enable_thinking = custom_inputs.get("enable_thinking")
+    reasoning_effort = custom_inputs.get("reasoning_effort")
+    
     extra_body = {}
     
     # Deep Thinking Logic
-    if request.enable_thinking is not None:
-        # Based on search results, use "thinking": {"type": "enabled"/"disabled"}
+    if enable_thinking is not None:
         extra_body["thinking"] = {
-            "type": "enabled" if request.enable_thinking else "disabled"
+            "type": "enabled" if enable_thinking else "disabled"
         }
     
-    # Reasoning Effort Logic
-    if request.reasoning_effort:
-        # Supporting both structures just in case, but prefer the nested one if documentation implies 'reasoning.effort'
-        # The user said "support adjusting thinking length via reasoning.effort"
-        # Search results hint at "Reasoning specifies the reasoning effort".
-        # We'll use "reasoning": {"effort": "value"} as per common advanced API patterns (like Anthropic/DeepSeek)
+    if reasoning_effort:
         if "reasoning" not in extra_body:
             extra_body["reasoning"] = {}
-        extra_body["reasoning"]["effort"] = request.reasoning_effort
+        extra_body["reasoning"]["effort"] = reasoning_effort
 
-    # Inject into inputs so create_graph (or specifically the chat node) can use it
-    # We need to pass this config down to the chat node.
-    # Currently `agent_service/graph.py` and `nodes/chat.py` instantiate the model.
-    # We might need to override the model config in `agent_config`.
-    
-    # NOTE: The current architecture might define the model INSIDE the graph node.
-    # We need to verify if `create_graph` or `chat` node respects runtime config overrides.
-    # Let's check `agent_service/nodes/chat.py` if possible.
-    # Assuming `agent_config` passed to graph is used to configure the model.
-    # If not, we might need to modify `chat.py`.
-    # For now, we inject `model_override` and `extra_body` into `agent_config`.
-    
     agent_conf["info"]["model_override"] = model_name
     agent_conf["info"]["extra_body"] = extra_body
 
     inputs = {
-        "messages": [HumanMessage(content=request.message)],
-        "agent_id": request.agent_id,
-        "user_id": request.user_id,
+        "messages": [HumanMessage(content=message)],
+        "agent_id": agent_id,
+        "user_id": user_id,
         "agent_config": agent_conf["info"],
         "intent": {},
         "rag_data": {},
         "skill_results": {},
     }
     
-    # Inject Core Memory into config for this turn
     inputs["agent_config"]["core_memory_context"] = core_memory
     
-    config = {"configurable": {"thread_id": request.session_id}}
+    config = {"configurable": {"thread_id": session_id}}
     
-    # Capture interactions for memory update
-    interaction_log = [] # List to store User and AI messages
+    interaction_log = [] 
 
     async def event_generator():
-        # Using astream_events (v2) for granular control over streaming tokens and tool events.
-        # version="v2" is required for standard event format.
-        
-        # Add User message to log
-        interaction_log.append(HumanMessage(content=request.message))
+        interaction_log.append(HumanMessage(content=message))
         ai_response_content = ""
         
         try:
@@ -292,58 +276,32 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 kind = event["event"]
                 
                 # 1. Chat Token Streaming
-                # Capture tokens from the 'chat_model' (ChatOpenAI)
                 if kind == "on_chat_model_start":
-                    # ... existing logic ...
-                    pass 
-                    
-                    # Capture the input messages to the LLM (Debug logic remains)
-                    inputs_data = event["data"].get("input")
-                    print(f"[DEBUG] on_chat_model_start input: {inputs_data}") 
-                    
-                    messages_list = []
-                    # Check if input is directly a list (common in some invokes) or a dict with messages
-                    if isinstance(inputs_data, list):
-                        raw_msgs = inputs_data
-                    elif isinstance(inputs_data, dict) and "messages" in inputs_data:
-                        raw_msgs = inputs_data["messages"]
-                    else:
-                        # Fallback: try to serialize whatever it is
-                        raw_msgs = []
-                        
-                    for m in raw_msgs:
-                         # Handle list of lists if nested
-                         if isinstance(m, list):
-                             for sub_m in m:
-                                 messages_list.append(sub_m.dict() if hasattr(sub_m, "dict") else str(sub_m))
-                         else:
-                             messages_list.append(m.dict() if hasattr(m, "dict") else str(m))
-                    
-                    yield f"data: {json.dumps({'type': 'llm_debug', 'data': messages_list})}\n\n"
+                    pass # Debug logic omitted
 
                 elif kind == "on_chat_model_stream":
                     chunk = event["data"]["chunk"]
                     
-                    # 1.1 Capture Thinking/Reasoning Content (Volcengine/DeepSeek style)
+                    # 1.1 Capture Thinking
                     reasoning = chunk.additional_kwargs.get("reasoning_content", "")
                     if reasoning:
-                        # Xiaoya doesn't have explicit thinking type, we use writtenAnswer with a prefix or just stream it.
-                        # For now, let's stream it as writtenAnswer but maybe distinct?
-                        # Or stick to legacy 'thinking' event if we want to keep frontend compat for a bit, 
-                        # but we are moving to Xiaoya.
-                        # Let's map it to writtenAnswer for now to be safe with the protocol.
+                        # Use 'iting' protocol for Thinking Process
                         payload = {
-                            "type": "writtenAnswer",
+                            "type": "iting",
                             "data": {
-                                "delta": f"[Thinking] {reasoning}\n",
-                                "end": False,
-                                "final": False,
-                                "extra": {"is_thinking": True}
+                                "type": 40,
+                                "value": {
+                                    "cardType": "thinking",
+                                    "cardData": {
+                                        "delta": reasoning,
+                                        "state": "processing"
+                                    }
+                                }
                             }
                         }
-                        yield f"event: writtenAnswer\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        yield f"event: iting\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-                    # 1.2 Capture Normal Content
+                    # 1.2 Capture Content
                     if chunk.content:
                         content = chunk.content
                         if isinstance(content, str):
@@ -358,45 +316,91 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                             }
                             yield f"event: writtenAnswer\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                             
-                # 3. Tool Execution Debugging (Input)
+                # 2. Tool Execution
                 elif kind == "on_tool_start":
-                    name = event["name"]
-                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill", "display_card"]:
-                        inputs_data = event["data"].get("input")
-                        # Keep debug event for frontend debug panel (custom event)
-                        yield f"event: debug\ndata: {json.dumps({'type': 'tool_debug', 'status': 'start', 'tool': name, 'input': inputs_data})}\n\n"
-                        
-                # 3. Tool Execution Debugging (Output) & Result Display
-                elif kind == "on_tool_end":
-                    name = event["name"]
-                    if name in ["web_search", "retrieve_knowledge", "search_ximalaya", "load_skill", "display_card"]:
-                        output_data = event["data"].get("output")
-                        
-                        if hasattr(output_data, "content"):
-                            output_str = output_data.content
-                        else:
-                            output_str = str(output_data)
-                            
-                        # Debug event
-                        yield f"event: debug\ndata: {json.dumps({'type': 'tool_debug', 'status': 'end', 'tool': name, 'output': output_str})}\n\n"
-                        
-                        # Special handling for display_card -> Xiaoya 'iting' protocol
-                        if name == "display_card":
-                            try:
-                                card_inner = json.loads(output_str)
-                                payload = {
-                                    "type": "iting",
-                                    "data": {
-                                        "type": 40,
-                                        "value": card_inner
-                                    }
+                    name = event.get("name", "unknown")
+                    tool_input = event.get("data", {}).get("input", {})
+                    
+                    # Emit 'iting' event for Tool Call
+                    payload = {
+                        "type": "iting",
+                        "data": {
+                            "type": 40,
+                            "value": {
+                                "cardType": "tool_call",
+                                "cardData": {
+                                    "tool": name,
+                                    "status": "start",
+                                    "input": tool_input
                                 }
-                                yield f"event: iting\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                            except Exception as e:
-                                print(f"Error parsing display_card output: {e}")
+                            }
+                        }
+                    }
+                    yield f"event: iting\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    
+                    # Also emit debug event for Debug Panel
+                    debug_payload = {
+                        "type": "tool_debug",
+                        "data": {
+                            "tool": name,
+                            "status": "start",
+                            "input": tool_input
+                        }
+                    }
+                    yield f"event: debug\ndata: {json.dumps(debug_payload, ensure_ascii=False)}\n\n"
+                        
+                elif kind == "on_tool_end":
+                    name = event.get("name", "unknown")
+                    output = event.get("data", {}).get("output", "")
+                    output_str = str(output)
+                    
+                    # Emit 'iting' event for Tool Result
+                    payload = {
+                        "type": "iting",
+                        "data": {
+                            "type": 40,
+                            "value": {
+                                "cardType": "tool_call",
+                                "cardData": {
+                                    "tool": name,
+                                    "status": "end",
+                                    "output": output_str[:500] if output_str else ""
+                                }
+                            }
+                        }
+                    }
+                    yield f"event: iting\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-                        # Legacy mapping for other tools if needed
-                        # ...
+                    # Also emit debug event for Debug Panel
+                    debug_payload = {
+                        "type": "tool_debug",
+                        "data": {
+                            "tool": name,
+                            "status": "end",
+                            "output": output_str[:500] if output_str else ""
+                        }
+                    }
+                    yield f"event: debug\ndata: {json.dumps(debug_payload, ensure_ascii=False)}\n\n"
+                    
+                    if name == "display_card":
+                        try:
+                            # Parse inner card data
+                            if isinstance(event["data"].get("output"), dict):
+                                card_inner = event["data"].get("output")
+                            else:
+                                card_inner = json.loads(output_str)
+                                
+                            # Wrap in Xiaoya 'iting' protocol
+                            payload = {
+                                "type": "iting",
+                                "data": {
+                                    "type": 40,
+                                    "value": card_inner
+                                }
+                            }
+                            yield f"event: iting\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        except Exception as e:
+                            print(f"Error parsing display_card output: {e}")
 
         except Exception as e:
             print(f"Stream Error: {e}")
@@ -405,15 +409,64 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
         # End event (Xiaoya protocol)
         yield f"event: end\ndata: {json.dumps({'type': 'end', 'data': {'success': True, 'msg': ''}}, ensure_ascii=False)}\n\n"
         
-        # After stream ends, trigger background task
+        # 3. Generate Reply Suggestions (Post-processing)
+        try:
+            # Call LLM to generate suggestions
+            if ai_response_content and VOLC_API_KEY:
+                suggestion_prompt = f"""
+                Based on the conversation history and the last AI response, generate 3 short, relevant reply suggestions for the user.
+                
+                [Last AI Response]
+                {ai_response_content}
+                
+                [Output Format]
+                Return ONLY a JSON object with a "suggestions" key containing a list of 3 strings.
+                Example: {{"suggestions": ["Tell me more", "Why?", "Next step"]}}
+                """
+                
+                llm = ChatOpenAI(
+                    api_key=VOLC_API_KEY,
+                    base_url=VOLC_BASE_URL,
+                    model=MODEL_GENERATOR,
+                    temperature=0.7
+                )
+                
+                # Use a separate invocation to get suggestions
+                # We do this after the main stream is done (but before connection closes? actually connection might close)
+                # Wait, 'yield' keeps connection open.
+                
+                # Note: This is a synchronous call in an async generator, might block slightly. 
+                # Ideally use ainvoke but we are in async generator.
+                
+                suggestion_response = await llm.ainvoke([HumanMessage(content=suggestion_prompt)])
+                content = suggestion_response.content
+                
+                # Extract JSON
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    suggestions_data = json.loads(json_str)
+                    
+                    # Emit 'iting' event for Reply Suggestions
+                    payload = {
+                        "type": "iting",
+                        "data": {
+                            "type": 40,
+                            "value": {
+                                "cardType": "reply_suggestions",
+                                "cardData": suggestions_data
+                            }
+                        }
+                    }
+                    yield f"event: iting\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    
+        except Exception as e:
+            print(f"Error generating suggestions: {e}")
+
         if ai_response_content:
             interaction_log.append(AIMessage(content=ai_response_content))
-            # We must use background_tasks.add_task. 
-            # However, StreamingResponse is a generator, so we can't easily use FastAPI's dependency injection for BackgroundTasks 
-            # directly inside the generator *after* the return.
-            # But we CAN add it to the background_tasks object passed to the endpoint, 
-            # and FastAPI will execute it after the response (StreamingResponse) is fully consumed/closed.
-            background_tasks.add_task(update_core_memory, request.user_id, request.agent_id, interaction_log)
+            background_tasks.add_task(update_core_memory, user_id, agent_id, interaction_log)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -605,6 +658,58 @@ def delete_skill(skill_id: str, agent_id: str = Query(..., description="Agent ID
             return {"status": "success"}
     finally:
         conn.close()
+
+@app.get("/models")
+def get_models():
+    """Get list of available LLM models"""
+    return [
+        # 1. Models with Reasoning Effort (Low/Medium/High)
+        {
+            "id": "doubao-seed-1-8-251228",
+            "name": "Doubao Seed 1.8 (Thinking)",
+            "has_thinking": True,
+            "thinking_mode": "effort"
+        },
+        {
+            "id": "doubao-seed-1-6-251015",
+            "name": "Doubao Seed 1.6 (Thinking)",
+            "has_thinking": True,
+            "thinking_mode": "effort"
+        },
+        {
+            "id": "doubao-seed-1-6-lite-251015",
+            "name": "Doubao Seed 1.6 Lite (Thinking)",
+            "has_thinking": True,
+            "thinking_mode": "effort"
+        },
+        
+        # 2. Models with Thinking Toggle Only
+        {
+            "id": "glm-4-7-251222",
+            "name": "GLM 4.7 (Thinking)",
+            "has_thinking": True,
+            "thinking_mode": "toggle"
+        },
+        {
+            "id": "deepseek-v3-2-251201",
+            "name": "DeepSeek V3 (Thinking)",
+            "has_thinking": True,
+            "thinking_mode": "toggle"
+        },
+        {
+            "id": "kimi-k2-thinking-251104",
+            "name": "Kimi K2 (Thinking)",
+            "has_thinking": True,
+            "thinking_mode": "toggle"
+        },
+
+        # 3. Models without Thinking Mode
+        {
+            "id": "doubao-1-5-pro-32k-250115",
+            "name": "Doubao 1.5 Pro",
+            "has_thinking": False
+        }
+    ]
 
 if __name__ == "__main__":
     import uvicorn
